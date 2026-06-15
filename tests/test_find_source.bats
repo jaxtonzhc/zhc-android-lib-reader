@@ -23,7 +23,8 @@ teardown() {
     "com.google.gson.Gson" "com.google.gson.GsonBuilder"
   cmd_find_source "com.google.code.gson" "gson" "2.11.0"
   grep -q "com.google.code.gson:gson:2.11.0" "$INDEX_FILE"
-  grep -q '"source"' "$INDEX_FILE"
+  # TSV: type column is "source" (no quotes)
+  grep -q "	source	" "$INDEX_FILE"
   # Path should point to the JAR file, not a directory
   grep -q "\.jar" "$INDEX_FILE"
 }

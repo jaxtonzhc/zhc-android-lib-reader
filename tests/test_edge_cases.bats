@@ -179,6 +179,56 @@ EOF
   [ "$lines_after_first" -eq "$lines_after_second" ]
 }
 
+@test "cmd_index_all preserves CLASS_INDEX_FILE for incremental rebuild" {
+  create_mock_source_jar "com.a" "lib" "1.0" "com.example.Foo"
+  create_mock_compiled_jar "com.b" "libb" "2.0" "com.example.Bar"
+
+  run cmd_index_all
+  [ "$status" -eq 0 ]
+
+  # Bug regression: CLASS_INDEX_FILE must NOT be deleted after index-all
+  # (it's needed by _append_compiled_classes to skip already-indexed coords)
+  [ -f "$CLASS_INDEX_FILE" ]
+
+  # CLASS_LOOKUP_FILE must also be preserved (the sorted output)
+  [ -f "$CLASS_LOOKUP_FILE" ]
+}
+
+@test "cmd_index_all second run does not duplicate compiled JAR classes" {
+  # Bug #7: CLASS_INDEX_FILE deleted after first run → Phase 2 re-indexes everything
+  create_mock_compiled_jar "com.b" "libb" "2.0" "com.example.Bar"
+
+  run cmd_index_all
+  [ "$status" -eq 0 ]
+  local coord_headers_after_first
+  coord_headers_after_first=$(grep -c '^########## com.b:libb:2.0' "$CLASS_INDEX_FILE" 2>/dev/null || echo 0)
+
+  run cmd_index_all
+  [ "$status" -eq 0 ]
+  local coord_headers_after_second
+  coord_headers_after_second=$(grep -c '^########## com.b:libb:2.0' "$CLASS_INDEX_FILE" 2>/dev/null || echo 0)
+
+  # If CLASS_INDEX_FILE is deleted between runs, the coord header will be duplicated
+  [ "$coord_headers_after_first" -eq 1 ]
+  [ "$coord_headers_after_second" -eq 1 ]
+}
+
+@test "cmd_index_all parallel phase 1 indexes all source JAR classes" {
+  # Regression: Phase 1 parallelization must not lose any classes
+  # Use many small JARs to exercise the parallel merge
+  create_mock_source_jar "com.a" "liba" "1.0" "com.example.foo.A1" "com.example.foo.A2"
+  create_mock_source_jar "com.b" "libb" "2.0" "com.example.bar.B1" "com.example.bar.B2"
+  create_mock_source_jar "com.c" "libc" "3.0" "com.example.baz.C1" "com.example.baz.C2"
+
+  run cmd_index_all
+  [ "$status" -eq 0 ]
+
+  # Every class from every JAR must be present in the lookup
+  for cls in com.example.foo.A1 com.example.foo.A2 com.example.bar.B1 com.example.bar.B2 com.example.baz.C1 com.example.baz.C2; do
+    grep -q "$cls" "$CLASS_LOOKUP_FILE" || { echo "MISSING: $cls" >&3; false; }
+  done
+}
+
 # ══════════════════════════════════════════════════════════════
 # 4. Corrupted JAR / edge cases
 # ══════════════════════════════════════════════════════════════
@@ -235,4 +285,59 @@ EOF
   # update_index recovers by recreating the file
   run update_index "com.a:lib:1.0" "source" "/some/path"
   [ -f "$INDEX_FILE" ]
+}
+
+# ══════════════════════════════════════════════════════════════
+# 6. Legacy index.json → index.tsv migration (#1)
+# ══════════════════════════════════════════════════════════════
+
+@test "migrate_legacy_index converts legacy JSON to TSV" {
+  # Simulate a legacy index.json (as produced by the old python3-based code)
+  cat > "$LEGACY_INDEX_FILE" << 'EOF'
+{
+  "com.google.code.gson:gson:2.11.0": {
+    "type": "source",
+    "path": "/path/to/gson-sources.jar",
+    "extracted_at": "2026-06-10T17:50:00"
+  },
+  "com.example.internal:sdk:1.0.0": {
+    "type": "decompiled",
+    "path": "/path/to/decompiled",
+    "extracted_at": "2026-06-10T18:00:00"
+  }
+}
+EOF
+  # Ensure index.tsv is empty so migration triggers
+  : > "$INDEX_FILE"
+
+  migrate_legacy_index
+
+  # index.tsv must contain both entries
+  [ -s "$INDEX_FILE" ]
+  grep -q "com.google.code.gson:gson:2.11.0	source	/path/to/gson-sources.jar" "$INDEX_FILE"
+  grep -q "com.example.internal:sdk:1.0.0	decompiled	/path/to/decompiled" "$INDEX_FILE"
+
+  # legacy file must be renamed to .bak
+  [ -f "${LEGACY_INDEX_FILE}.bak" ]
+  [ ! -f "$LEGACY_INDEX_FILE" ]
+}
+
+@test "migrate_legacy_index is idempotent (skips when already migrated)" {
+  echo '{"com.a:b:1.0": {"type": "source", "path": "/p", "extracted_at": ""}}' > "$LEGACY_INDEX_FILE"
+  printf 'com.a:b:1.0\tsource\t/p\t\n' > "$INDEX_FILE"
+
+  migrate_legacy_index
+
+  # index.tsv unchanged (not overwritten)
+  grep -q "com.a:b:1.0	source	/p" "$INDEX_FILE"
+  # legacy file NOT renamed (migration skipped because tsv already has data)
+  [ -f "$LEGACY_INDEX_FILE" ]
+}
+
+@test "migrate_legacy_index skips when no legacy file exists" {
+  rm -f "$LEGACY_INDEX_FILE"
+  : > "$INDEX_FILE"
+  migrate_legacy_index
+  [ ! -f "$LEGACY_INDEX_FILE" ]
+  [ ! -s "$INDEX_FILE" ]
 }

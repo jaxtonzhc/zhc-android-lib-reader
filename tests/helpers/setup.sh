@@ -16,12 +16,16 @@ setup_mock_env() {
   export CACHE_ROOT="${TEST_CACHE_ROOT}"
   export GRADLE_CACHE="${TEST_GRADLE_CACHE}"
   export PROJECT_ROOT="${TEST_PROJECT_ROOT}"
-  export INDEX_FILE="${TEST_CACHE_ROOT}/index.json"
+  export INDEX_FILE="${TEST_CACHE_ROOT}/index.tsv"
+  export LEGACY_INDEX_FILE="${TEST_CACHE_ROOT}/index.json"
   export CLASS_INDEX_FILE="${TEST_CACHE_ROOT}/class-index.txt"
   export CLASS_LOOKUP_FILE="${TEST_CACHE_ROOT}/class-lookup.txt"
+  export LOOKUP_SORTED_FLAG="${TEST_CACHE_ROOT}/.lookup-sorted"
+  export INDEXED_COORDS="${TEST_CACHE_ROOT}/indexed-coords.txt"
 
-  echo '{}' > "${INDEX_FILE}"
+  touch "${INDEX_FILE}"
   touch "${CLASS_INDEX_FILE}"
+  touch "${INDEXED_COORDS}"
 }
 
 # Create a mock source JAR in Gradle cache

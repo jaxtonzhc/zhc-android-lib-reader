@@ -58,16 +58,20 @@ _emit_read_result() {
 }
 
 # Fuzzy match class name against class-lookup.txt
-# Sets: _FUZZY_COORD (matched coord), _FUZZY_CLASS (full class name), _FUZZY_FILE (java/kt path)
+# Sets: _FUZZY_ALL (array of "coord|class" pairs, ordered by preference), _FUZZY_COORD, _FUZZY_CLASS, _FUZZY_FILE
+# Usage: _fuzzy_match_class <class_name> <java_file> <kt_file>
+# After call, iterate _FUZZY_ALL to try all candidates
 _FUZZY_COORD=""
 _FUZZY_CLASS=""
 _FUZZY_FILE=""
+_FUZZY_ALL=()
 _fuzzy_match_class() {
   local class_name="$1" java_file="$2" kt_file="$3"
   local simple_name="${class_name##*.}"
   _FUZZY_COORD=""
   _FUZZY_CLASS=""
   _FUZZY_FILE=""
+  _FUZZY_ALL=()
 
   local fuzzy_results
   fuzzy_results=$(grep "\.${simple_name}	" "$CLASS_LOOKUP_FILE" 2>/dev/null \
@@ -81,14 +85,14 @@ _fuzzy_match_class() {
   if [ "$match_count" -eq 1 ]; then
     local real_class real_coord
     IFS='|' read -r real_class real_coord <<< "$fuzzy_results"
-    echo "FUZZY_MATCH:${class_name} -> ${real_class}"
     _FUZZY_COORD="$real_coord"
     _FUZZY_CLASS="$real_class"
     _FUZZY_FILE=$(echo "$real_class" | tr '.' '/').java
+    _FUZZY_ALL=("${real_coord}|${real_class}")
     return 0
   fi
 
-  # Multiple candidates: prefer project version, otherwise first
+  # Multiple candidates: prefer project version first, then rest
   local first_class first_coord
   first_class=$(echo "$fuzzy_results" | head -1 | cut -d'|' -f1)
   first_coord=$(echo "$fuzzy_results" | head -1 | cut -d'|' -f2)
@@ -99,25 +103,24 @@ _fuzzy_match_class() {
   local proj_ver
   proj_ver=$(resolve_project_version "$fuzzy_gid" "$fuzzy_aid")
 
-  local chosen_class="$first_class"
-  local chosen_coord="$first_coord"
-
+  # Build ordered candidate list: project version match first, then others
   if [ -n "$proj_ver" ]; then
     while IFS='|' read -r cls coord; do
       if [[ "$coord" == *":${proj_ver}" ]]; then
-        chosen_class="$cls"
-        chosen_coord="$coord"
-        break
+        _FUZZY_ALL=("${coord}|${cls}")
       fi
     done <<< "$fuzzy_results"
-    echo "FUZZY_MATCH:${class_name} -> ${chosen_class} (project version: ${proj_ver})"
-  else
-    echo "FUZZY_MATCH:${class_name} -> ${chosen_class} (first candidate)"
   fi
+  # Append all candidates (project version entry will be tried first, others as fallback)
+  while IFS='|' read -r cls coord; do
+    _FUZZY_ALL+=("${coord}|${cls}")
+  done <<< "$fuzzy_results"
 
-  _FUZZY_COORD="$chosen_coord"
-  _FUZZY_CLASS="$chosen_class"
-  _FUZZY_FILE=$(echo "$chosen_class" | tr '.' '/').java
+  # Set primary (first candidate)
+  local primary="${_FUZZY_ALL[0]}"
+  _FUZZY_COORD="${primary%%|*}"
+  _FUZZY_CLASS="${primary#*|}"
+  _FUZZY_FILE=$(echo "$_FUZZY_CLASS" | tr '.' '/').java
   return 0
 }
 
@@ -161,18 +164,10 @@ cmd_find_class() {
   local indexed_coord
   indexed_coord=$(lookup_class_index "$class_name")
 
-  if [ -z "$indexed_coord" ]; then
-    _fuzzy_match_class "$class_name" "$java_file" "$kt_file" && {
-      indexed_coord="$_FUZZY_COORD"
-      java_file="$_FUZZY_FILE"
-      kt_file=$(echo "$_FUZZY_CLASS" | tr '.' '/').kt
-    }
-  fi
-
+  # Exact match: single coord, fast path
   if [ -n "$indexed_coord" ]; then
     local indexed_entry
     indexed_entry=$(check_index "$indexed_coord")
-
     if [ -n "$indexed_entry" ]; then
       _read_from_index "$indexed_entry" "$java_file" "$kt_file"
       if [ -n "$_READ_RESULT" ]; then
@@ -180,46 +175,54 @@ cmd_find_class() {
         return 0
       fi
     fi
-
-    # Index has coord but source not yet recorded — trigger find-source
+    # Coord in index but source not readable — try find-source
     local idx_gid idx_aid idx_ver
     IFS=: read -r idx_gid idx_aid idx_ver <<< "$indexed_coord"
-
     local proj_ver
     proj_ver=$(resolve_project_version "$idx_gid" "$idx_aid")
     [ -n "$proj_ver" ] && idx_ver="$proj_ver"
-
     local _fs_output
-    _fs_output=$(cmd_find_source "$idx_gid" "$idx_aid" "$idx_ver" 2>&1) || {
-      echo "WARN:find-source failed for ${indexed_coord}, results may be incomplete" >&2
-    }
-
-    # Version fallback: if specified version JAR not found, search other versions
-    if [ ! -f "$indexed_entry" ] 2>/dev/null; then
-      local alt_jar
-      alt_jar=$(find "${GRADLE_CACHE}/${idx_gid}/${idx_aid}" -name "*-sources.jar" -type f 2>/dev/null | head -1)
-      if [ -n "$alt_jar" ]; then
-        local alt_rel="${alt_jar#${GRADLE_CACHE}/}"
-        local alt_ver
-        alt_ver=$(echo "$alt_rel" | cut -d/ -f3)
-        local alt_coord="${idx_gid}:${idx_aid}:${alt_ver}"
-        update_index "$alt_coord" "source" "$alt_jar"
-        build_class_index_from_jar "$alt_coord" "$alt_jar"
-        indexed_coord="$alt_coord"
-        indexed_entry="$alt_jar"
-      fi
-    fi
-
+    _fs_output=$(cmd_find_source "$idx_gid" "$idx_aid" "$idx_ver" 2>&1) || true
     indexed_entry=$(check_index "$indexed_coord")
     if [ -n "$indexed_entry" ]; then
       _read_from_index "$indexed_entry" "$java_file" "$kt_file"
       if [ -n "$_READ_RESULT" ]; then
-        local extra=()
-        [ -n "$proj_ver" ] && extra+=("VERSION_MATCH:project uses ${proj_ver}")
-        _emit_read_result "$indexed_entry" "$indexed_coord" "${extra[@]}"
+        _emit_read_result "$indexed_entry" "$indexed_coord"
         return 0
       fi
     fi
+  fi
+
+  # Fuzzy match: try ALL candidates before falling to Layer 1
+  if [ -z "$indexed_coord" ] && _fuzzy_match_class "$class_name" "$java_file" "$kt_file"; then
+    local proj_ver fuzzy_gid fuzzy_aid
+    fuzzy_gid=$(echo "${_FUZZY_ALL[0]}" | cut -d'|' -f1 | cut -d: -f1)
+    fuzzy_aid=$(echo "${_FUZZY_ALL[0]}" | cut -d'|' -f1 | cut -d: -f2)
+    proj_ver=$(resolve_project_version "$fuzzy_gid" "$fuzzy_aid")
+    # Try each candidate: first project version match, then all others
+    for candidate in "${_FUZZY_ALL[@]}"; do
+      local cand_coord="${candidate%%|*}"
+      local cand_class="${candidate#*|}"
+      local cand_file cand_kt
+      cand_file=$(echo "$cand_class" | tr '.' '/').java
+      cand_kt=$(echo "$cand_class" | tr '.' '/').kt
+
+      local indexed_entry
+      indexed_entry=$(check_index "$cand_coord")
+      [ -z "$indexed_entry" ] && continue
+
+      _read_from_index "$indexed_entry" "$cand_file" "$cand_kt"
+      if [ -n "$_READ_RESULT" ]; then
+        echo "FUZZY_MATCH:${class_name} -> ${cand_class}"
+        if [ -n "$proj_ver" ]; then
+          _emit_read_result "$indexed_entry" "$cand_coord" "VERSION_MATCH:project uses ${proj_ver}"
+        else
+          _emit_read_result "$indexed_entry" "$cand_coord"
+        fi
+        return 0
+      fi
+    done
+    # All fuzzy candidates failed to read — fall through to Layer 1
   fi
 
   # ── Layer 1: Scan Gradle source JARs ──

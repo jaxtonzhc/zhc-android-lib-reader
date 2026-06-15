@@ -110,27 +110,22 @@ cmd_tree() {
     return 1
   fi
 }
-
 cmd_list_cached() {
   init_cache
-  python3 -c '
-import json, sys
-idx = json.load(open(sys.argv[1]))
-if not idx:
-    print("(no cache)")
-    sys.exit(0)
-for coord in sorted(idx.keys()):
-    entry = idx[coord]
-    t = entry.get("type", "unknown")
-    print(coord + "  [" + t + "]")
-' "$INDEX_FILE"
+  if [ ! -s "$INDEX_FILE" ]; then
+    echo "(no cache)"
+    return 0
+  fi
+  awk -F'\t' 'NF>=3{print $1"  ["$2"]"}' "$INDEX_FILE" | sort
 }
 
 cmd_rebuild_index() {
   init_cache
   : > "$CLASS_LOOKUP_FILE"
-  local coord path_val
-  while IFS=$'\t' read -r coord path_val; do
+  : > "$INDEXED_COORDS"
+  rm -f "$LOOKUP_SORTED_FLAG"
+  local coord type_val path_val
+  while IFS='	' read -r coord type_val path_val _; do
     [ -z "$coord" ] && continue
     # path_val could be a JAR file or a directory
     if [[ "$path_val" == *.jar && -f "$path_val" ]]; then
@@ -140,16 +135,10 @@ cmd_rebuild_index() {
       build_class_index_for_coord "$coord" "$path_val"
       echo "  Indexed: ${coord} (from dir)"
     fi
-  done < <(python3 -c "
-import json, sys
-idx = json.load(open(sys.argv[1]))
-for coord, entry in idx.items():
-    path_val = entry.get('path', '')
-    if path_val:
-        print(f'{coord}\t{path_val}')
-" "$INDEX_FILE")
-  # Re-sort the lookup file for binary search
-  LC_ALL=C sort -t$'\t' -k1,1 -u -o "$CLASS_LOOKUP_FILE" "$CLASS_LOOKUP_FILE"
+  done < "$INDEX_FILE"
+  # Re-sort the lookup file for binary search (use TAB as field separator)
+  LC_ALL=C sort -t"$(printf '\t')" -k1,1 -u -o "$CLASS_LOOKUP_FILE" "$CLASS_LOOKUP_FILE"
+  touch "$LOOKUP_SORTED_FLAG"
   local total
   total=$(wc -l < "$CLASS_LOOKUP_FILE" 2>/dev/null | tr -d ' ')
   echo "Index rebuilt: ${total} classes"

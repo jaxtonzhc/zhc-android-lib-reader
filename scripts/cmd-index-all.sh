@@ -28,39 +28,97 @@ cmd_index_all() {
   init_cache
   echo "=== Building class index (no source extraction) ==="
 
-  # ── Phase 1: Index source JARs (class names only, no extract) ──
+  # ── Phase 1: Index source JARs (class names only, no extract) — parallel ──
   local tmp_jar_list
   tmp_jar_list=$(mktemp)
   find "${GRADLE_CACHE}" -name "*-sources.jar" -type f 2>/dev/null > "$tmp_jar_list"
   local total_jars
   total_jars=$(wc -l < "$tmp_jar_list" | tr -d ' ')
-  echo "Phase 1/3: Scanning ${total_jars} source JARs..."
+  echo "Phase 1/3: Scanning ${total_jars} source JARs (parallel)..."
 
-  local processed=0
-  while IFS= read -r jar; do
-    [ -z "$jar" ] && continue
-    local rel_path="${jar#${GRADLE_CACHE}/}"
-    local gid aid ver coord
-    gid=$(echo "$rel_path" | cut -d/ -f1)
-    aid=$(echo "$rel_path" | cut -d/ -f2)
-    ver=$(echo "$rel_path" | cut -d/ -f3)
-    coord="${gid}:${aid}:${ver}"
+  # Pre-filter: keep only JARs whose coord is NOT yet in CLASS_INDEX_FILE.
+  # Read existing headers once into a grep pattern (much cheaper than per-JAR grep).
+  local tmp_unindexed
+  tmp_unindexed=$(mktemp)
+  if [ -s "$CLASS_INDEX_FILE" ]; then
+    local existing_coords
+    existing_coords=$(grep '^########## ' "$CLASS_INDEX_FILE" 2>/dev/null | sed 's/^########## //' | sort -u)
+    # Keep JAR lines whose computed coord is not in existing_coords
+    while IFS= read -r jar; do
+      [ -z "$jar" ] && continue
+      local rel_path="${jar#${GRADLE_CACHE}/}"
+      local gid aid ver coord
+      gid=$(echo "$rel_path" | cut -d/ -f1)
+      aid=$(echo "$rel_path" | cut -d/ -f2)
+      ver=$(echo "$rel_path" | cut -d/ -f3)
+      coord="${gid}:${aid}:${ver}"
+      echo "$coord	$jar"
+    done < "$tmp_jar_list" | grep -Fvf <(echo "$existing_coords") > "$tmp_unindexed"
+  else
+    while IFS= read -r jar; do
+      [ -z "$jar" ] && continue
+      local rel_path="${jar#${GRADLE_CACHE}/}"
+      local gid aid ver coord
+      gid=$(echo "$rel_path" | cut -d/ -f1)
+      aid=$(echo "$rel_path" | cut -d/ -f2)
+      ver=$(echo "$rel_path" | cut -d/ -f3)
+      coord="${gid}:${aid}:${ver}"
+      echo "$coord	$jar"
+    done < "$tmp_jar_list" > "$tmp_unindexed"
+  fi
 
-    # Skip if already indexed
-    if grep -q "^########## ${coord}$" "$CLASS_INDEX_FILE" 2>/dev/null; then
-      processed=$((processed + 1))
-      _progress_bar "$processed" "$total_jars"
-      continue
-    fi
+  local unindexed_count
+  unindexed_count=$(wc -l < "$tmp_unindexed" 2>/dev/null | tr -d ' ')
+  unindexed_count=${unindexed_count:-0}
+  local skipped=$(( total_jars - unindexed_count ))
+  [ "$skipped" -lt 0 ] && skipped=0
 
-    # Record JAR path in index and scan class names into CLASS_INDEX_FILE
-    update_index "$coord" "source" "$jar"
-    echo "########## ${coord}" >> "$CLASS_INDEX_FILE"
-    jar tf "$jar" 2>/dev/null | grep -E '\.(java|kt)$' | sed 's/\.[^.]*$//;s/\//./g' >> "$CLASS_INDEX_FILE"
-    processed=$((processed + 1))
-    _progress_bar "$processed" "$total_jars"
-  done < "$tmp_jar_list"
-  rm -f "$tmp_jar_list"
+  # Parallel scan: each worker writes to its own temp file (avoids interleaving).
+  # Worker output format (one block per JAR):
+  #   ########## <coord>
+  #   <class1>
+  #   <class2>
+  local tmp_phase1_dir
+  tmp_phase1_dir=$(mktemp -d)
+  if [ "$unindexed_count" -gt 0 ]; then
+    local worker="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/_scan-jar-worker.sh"
+    # Each worker writes to tmp_phase1_dir/<seq>.txt (numbered by position in list)
+    local seq=0
+    while IFS= read -r jar; do
+      seq=$((seq + 1))
+      "$worker" "$jar" "${GRADLE_CACHE}" > "${tmp_phase1_dir}/${seq}.txt" 2>/dev/null &
+      # Limit to 8 concurrent workers
+      if (( seq % 8 == 0 )); then
+        wait
+      fi
+    done < <(cut -f2 "$tmp_unindexed")
+    wait
+  fi
+
+  # Merge worker outputs in JAR order (preserves correct coord-class association)
+  for f in "${tmp_phase1_dir}"/*.txt; do
+    [ -s "$f" ] && cat "$f" >> "$CLASS_INDEX_FILE"
+  done
+
+  # Update INDEX_FILE (index.tsv) with all newly-indexed coords + paths, in one pass.
+  if [ -s "$tmp_unindexed" ]; then
+    local ts
+    ts=$(date -u +"%Y-%m-%dT%H:%M:%S")
+    while IFS='	' read -r coord jar; do
+      [ -z "$coord" ] && continue
+      printf '%s\tsource\t%s\t%s\n' "$coord" "$jar" "$ts"
+    done < "$tmp_unindexed" >> "$INDEX_FILE"
+    # Also record in INDEXED_COORDS (dedup against existing entries)
+    cut -f1 "$tmp_unindexed" | grep -vxFf "$INDEXED_COORDS" >> "$INDEXED_COORDS" 2>/dev/null || true
+  fi
+
+  rm -rf "$tmp_jar_list" "$tmp_unindexed" "$tmp_phase1_dir"
+
+  if [ "$skipped" -gt 0 ]; then
+    echo "  Scanned ${unindexed_count} new, skipped ${skipped} already indexed"
+  else
+    echo "  Scanned ${unindexed_count} JARs"
+  fi
   echo ""
 
   # ── Phase 2: Index compiled JARs (class name only) ──
@@ -117,7 +175,7 @@ cmd_index_all() {
   local total_libs
   total_libs=$(grep -c '^##########' "$CLASS_INDEX_FILE" 2>/dev/null || echo 0)
   echo "=== Done: ${total_libs} libraries, ${total_classes} classes indexed ==="
-  rm -f "$CLASS_INDEX_FILE"  # 构建完成，释放临时文件
+  # Keep CLASS_INDEX_FILE for incremental index-all (Phase 2/3 skip already-indexed coords)
 
   # Restore original shell options
   eval "$_old_opts"
