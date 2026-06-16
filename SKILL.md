@@ -14,7 +14,7 @@ alwaysApply: true
 2. **Read source by Maven coordinate** — Give a coordinate (e.g. `com.google.code.gson:gson:2.11.0`), extract the entire library
 3. **Search library source** — Search keywords across extracted library source code
 4. **List library structure** — View the package structure and file listing of a library
-5. **Auto version matching** — Automatically parse the actual library version from project `build.gradle`
+5. **Auto version matching** — Automatically parse the actual library version from project `build.gradle` or `libs.versions.toml`
 
 
 ## Prerequisites
@@ -84,7 +84,7 @@ The tool supports 3 decompilers with automatic selection and **fallback chain**:
 bash scripts/fetch-decompilers.sh
 ```
 
-This downloads CFR 0.152 from GitHub/Maven Central and Fernflower (from IntelliJ IDEA or GitHub).
+This downloads CFR 0.152 from Maven Central and Fernflower from JetBrains Maven repository.
 
 **Design principles**:
 - `decompile_jar` owns selection + execution + fallback — callers don't need to know which decompiler is used.
@@ -110,20 +110,14 @@ Most open-source libraries publish a `-sources.jar` alongside the main artifact.
 SOURCE_JAR=$(find ~/.gradle/caches/modules-2/files-2.1/<groupId>/<artifactId>/<version> \
   -name "*-sources.jar" -type f 2>/dev/null | head -1)
 
-# 2. Extract to cache directory
-CACHE_DIR=~/.gradle/android-lib-reader/sources/<groupId>/<artifactId>/<version>
-mkdir -p "$CACHE_DIR"
-unzip -o -q "$SOURCE_JAR" -d "$CACHE_DIR"
-
-# 3. Read the target class file
+# 2. Read target class file directly from JAR (no extraction to disk)
 # Convert class name com.google.gson.Gson to path com/google/gson/Gson.java
+unzip -p "$SOURCE_JAR" "com/google/gson/Gson.java"
 ```
 
 ### Layer 2: JAR/AAR Decompilation (Fallback when no source available)
 
-When no source JAR exists, uses `jadx` to decompile `.jar` or `classes.jar` inside `.aar` files.
-
-**Prerequisite**: jadx must be installed (`brew install jadx`)
+When no source JAR exists, uses the decompiler fallback chain to decompile `.jar` or `classes.jar` inside `.aar` files.
 
 ```bash
 # 1. Find compiled artifact
@@ -137,19 +131,9 @@ if [[ "$ARTIFACT" == *.aar ]]; then
   ARTIFACT=/tmp/aar-extract/classes.jar
 fi
 
-# 3. Decompile with jadx
+# 3. Decompile (auto-selects best available decompiler)
 CACHE_DIR=~/.gradle/android-lib-reader/decompiled/<groupId>/<artifactId>/<version>
-jadx -d "$CACHE_DIR" --no-res "$ARTIFACT"
-```
-
-### Layer 3: Gradle On-Demand Download
-
-When no source JAR is found in the Gradle cache, trigger a Gradle task to download it.
-
-```bash
-# Run in Android project root
-./gradlew :app:dependencies --configuration releaseRuntimeClasspath 2>/dev/null | \
-  grep "<artifactId>"
+# decompile_jar handles jadx/CFR/Fernflower selection and fallback automatically
 ```
 
 ## Cache Design
@@ -157,94 +141,35 @@ When no source JAR is found in the Gradle cache, trigger a Gradle task to downlo
 ### Cache Directory Structure
 ```
 ~/.gradle/android-lib-reader/
-├── sources/                                    # Layer 1: Source extraction
+├── sources/                                    # Layer 1: Source extraction (legacy, dir-based)
 │   └── <groupId>/<artifactId>/<version>/
 │       └── com/example/MyClass.java
 ├── decompiled/                                 # Layer 2: Decompiled output
 │   └── <groupId>/<artifactId>/<version>/
-│       └── sources/com/example/MyClass.java
-├── index.json                                  # Library coordinate index (cross-session)
+│       └── [sources/]com/example/MyClass.java
+├── index.tsv                                   # Library coordinate index (TSV format, cross-session)
 ├── class-index.txt                             # Inverted index (library → classes, human-readable)
 └── class-lookup.txt                            # Sorted lookup (class → library, binary search)
 ```
 
-### index.json Format
-```json
-{
-  "com.google.code.gson:gson:2.11.0": {
-    "type": "source",
-    "path": "sources/com.google.code.gson/gson/2.11.0",
-    "extracted_at": "2026-06-10T17:50:00"
-  },
-  "com.example.internal:sdk:1.0.0": {
-    "type": "decompiled",
-    "path": "decompiled/com.example.internal/sdk/1.0.0",
-    "extracted_at": "2026-06-10T18:00:00"
-  }
-}
+### index.tsv Format
+```
+com.google.code.gson:gson:2.11.0	source	/path/to/gson-2.11.0-sources.jar	2026-06-10T17:50:00
+com.example.internal:sdk:1.0.0	decompiled	/path/to/decompiled/sources	2026-06-10T18:00:00
 ```
 
-## Usage Guide
+> **Note**: The index was migrated from `index.json` to `index.tsv` for better performance. Legacy `index.json` files are auto-migrated on first use.
 
-### Scenario 1: Read source by class name
+### Environment Variables
 
-When you see an import statement (e.g. `import com.squareup.okhttp3.OkHttpClient`) and need to view its source:
-
-```bash
-# Step 1: Infer groupId from package name (usually first 3-4 segments)
-# com.squareup.okhttp3 -> groupId may be com.squareup.okhttp3
-
-# Step 2: Fuzzy search in Gradle cache by package prefix
-find ~/.gradle/caches/modules-2/files-2.1/ -path "*squareup*okhttp*" -name "*-sources.jar" 2>/dev/null
-
-# Step 3: If multiple versions found, check project's build.gradle for the actual version
-# Step 4: Once coordinate is confirmed, extract via Layer 1
-```
-
-### Scenario 2: Read entire library by Maven coordinate
-
-```bash
-# Known coordinate: com.google.code.gson:gson:2.11.0
-GROUP_ID="com.google.code.gson"
-ARTIFACT_ID="gson"
-VERSION="2.11.0"
-CACHE_DIR=~/.gradle/android-lib-reader/sources/$GROUP_ID/$ARTIFACT_ID/$VERSION
-
-# Check cache
-if [ -d "$CACHE_DIR" ]; then
-  echo "Cache hit, reading directly"
-else
-  # Find and extract source JAR
-  SOURCE_JAR=$(find ~/.gradle/caches/modules-2/files-2.1/$GROUP_ID/$ARTIFACT_ID/$VERSION \
-    -name "*-sources.jar" -type f 2>/dev/null | head -1)
-  if [ -n "$SOURCE_JAR" ]; then
-    mkdir -p "$CACHE_DIR"
-    unzip -o -q "$SOURCE_JAR" -d "$CACHE_DIR"
-  fi
-fi
-
-# Read target file
-# Read tool: $CACHE_DIR/com/google/gson/Gson.java
-```
-
-### Scenario 3: Search keywords in library source
-
-```bash
-rg "methodName" ~/.gradle/android-lib-reader/sources/<groupId>/<artifactId>/<version>/
-```
-
-### Scenario 4: View library directory structure
-
-```bash
-find ~/.gradle/android-lib-reader/sources/<groupId>/<artifactId>/<version>/ \
-  -name "*.java" -o -name "*.kt" | head -50
-```
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PROJECT_ROOT` | Android project root for version matching | Current directory |
+| `GRADLE_USER_HOME` | Custom Gradle home directory | `~/.gradle` |
 
 ## Script Commands
 
 Script path: `scripts/lib-reader.sh`
-
-Set `PROJECT_ROOT` environment variable to enable auto version matching:
 
 ```bash
 PROJECT_ROOT=/path/to/android/project scripts/lib-reader.sh <command> [args]
@@ -266,46 +191,65 @@ PROJECT_ROOT=/path/to/android/project scripts/lib-reader.sh <command> [args]
 
 ### find-class Search Strategy
 
-`find-class` uses a four-layer progressive search to ensure hits even when groupId ≠ Java package name:
+`find-class` uses a two-layer progressive search:
 
-1. **Class index query** (~0.1s) — Binary search via `look` on sorted `class-lookup.txt`
-2. **Extracted cache search** (~0.03s) — Filesystem search in `~/.gradle/android-lib-reader/`
-3. **Parallel source JAR scan** (~10s) — 8-way parallel `jar tf | grep`, independent of directory naming
-4. **Parallel AAR scan + decompile** (~20s) — Scans `classes.jar` inside AARs when no source JAR exists, decompiles with jadx
+1. **Layer 0: Index lookup** (~0.1s) — Binary search via `look` on sorted `class-lookup.txt`. Supports exact match by FQCN and fuzzy match by simple class name. When multiple candidates exist, prefers the version used by the project.
+2. **Layer 1: Parallel source JAR scan** (~10s) — 8-way parallel `unzip -Z -1 | grep` across all source JARs in Gradle cache. Falls back here when the class index has no match.
 
-**Recommended**: Run `index-all` once on first use to build the full index. All subsequent `find-class` calls will hit Layer 1 with instant response.
-
-When jadx is missing, it will be auto-installed via `brew install jadx`.
+**Recommended**: Run `index-all` once on first use to build the full index. All subsequent `find-class` calls will hit Layer 0 with instant response.
 
 ### Version Matching Mechanism
 
-`find-class` and `find-source` (when version is omitted) automatically parse the actual library version from project `build.gradle`:
+`find-class` and `find-source` (when version is omitted) automatically parse the actual library version from the project:
 
-1. **Variable reference first**: `"com.xxx:yyy:$version"` → find variable definition → extract version
+1. **Variable reference**: `"com.xxx:yyy:$version"` → find variable definition → extract version
 2. **Hardcoded version**: `"com.xxx:yyy:1.2.3"` → extract directly
-3. **Version Catalog**: Module declarations in `libs.versions.toml`
+3. **Version Catalog (inline)**: `module = "com.xxx:yyy"` with `version = "1.2.3"` in `.toml`
+4. **Version Catalog (ref)**: `module = "com.xxx:yyy"` with `version.ref = "xxx"` → resolves from `[versions]` section
 
 Output includes version match status:
 - `VERSION_MATCH:Project uses version X.Y.Z` — Exact match
 - `VERSION_WARN:Project uses X.Y.Z, but only found source for A.B.C` — Version mismatch, note caution
 
-## Quick Command Reference (Without Script)
+## Real-World Query Examples
 
-| Operation | Command |
-|-----------|---------|
-| Check if cache exists | `ls ~/.gradle/android-lib-reader/sources/<groupId>/<artifactId>/<version>/` |
-| Find source JAR | `find ~/.gradle/caches/modules-2/files-2.1/<groupId>/<artifactId> -name "*-sources.jar"` |
-| Extract source JAR | `unzip -o -q <source.jar> -d <cache_dir>` |
-| Find compiled artifact | `find ~/.gradle/caches/modules-2/files-2.1/<groupId>/<artifactId> -name "*.jar" -not -name "*-sources*"` |
-| Decompile | `jadx -d <output_dir> --no-res <input.jar>` |
-| Fuzzy search library | `find ~/.gradle/caches/modules-2/files-2.1/ -path "*keyword*" -name "*-sources.jar"` |
-| Search source content | `rg "pattern" ~/.gradle/android-lib-reader/sources/<groupId>/` |
+```bash
+# Simple class name → fuzzy match
+$ find-class Gson
+FUZZY_MATCH:Gson -> com.google.gson.Gson
+FOUND:.../gson-2.8.5-sources.jar!com/google/gson/Gson.java
+COORD:com.google.code.gson:gson:2.8.5
+
+# FQCN → exact index match (~0.3s)
+$ find-class okhttp3.OkHttpClient
+FOUND:.../okhttp-3.14.9-sources.jar!okhttp3/OkHttpClient.java
+COORD:com.squareup.okhttp3:okhttp:3.14.9
+
+# AndroidX class
+$ find-class androidx.lifecycle.ViewModel
+FOUND:.../lifecycle-viewmodel-2.3.0-sources.jar!androidx/lifecycle/ViewModel.java
+
+# Internal SDK class
+$ find-class MMOkHttpDns
+FUZZY_MATCH:MMOkHttpDns -> com.immomo.mmdns.MMOkHttpDns
+FOUND:.../mmdns-2.2.16.noweb2-sources.jar!com/immomo/mmdns/MMOkHttpDns.java
+```
+
+### AI Agent Query Guide
+
+When you cannot find a class in the project source, use these commands in order of preference:
+
+1. **`find-class <FQCN>`** — Best when you know the full class name from an import statement
+2. **`find-class <SimpleName>`** — When you only see the class name without package
+3. **`find-source <gid> <aid>`** — When you know the Maven coordinate (version auto-resolved)
+4. **`search <keyword>`** — When unsure about class name, search by library keyword
 
 ## Notes
 
 - **Prefer source JAR** (Layer 1) over decompilation
 - **Version matching**: Always confirm the actual library version used by the project (check `build.gradle` or `gradle.lockfile`)
-- **jadx is required for decompilation fallback. See Prerequisites section above for install instructions.
+- **jadx** is required for decompilation fallback. See Prerequisites section above for install instructions.
 - **AAR vs JAR**: AAR is Android library format containing `classes.jar`, resources, AndroidManifest, etc.; must extract before decompiling
 - **Cache is persistent**: `~/.gradle/android-lib-reader/` persists across sessions
+- **Custom Gradle home**: Set `GRADLE_USER_HOME` environment variable if using a non-default Gradle directory
 - **Clear cache**: `rm -rf ~/.gradle/android-lib-reader/` to clear; will re-extract on next use

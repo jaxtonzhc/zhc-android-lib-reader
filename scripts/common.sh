@@ -3,8 +3,9 @@
 # Note: Module scripts are sourced by lib-reader.sh which sets 'set -euo pipefail'.
 # Do NOT set shell options here — they would override the caller's settings.
 
-CACHE_ROOT="${HOME}/.gradle/android-lib-reader"
-GRADLE_CACHE="${HOME}/.gradle/caches/modules-2/files-2.1"
+_GRADLE_HOME="${GRADLE_USER_HOME:-${HOME}/.gradle}"
+CACHE_ROOT="${_GRADLE_HOME}/android-lib-reader"
+GRADLE_CACHE="${_GRADLE_HOME}/caches/modules-2/files-2.1"
 INDEX_FILE="${CACHE_ROOT}/index.tsv"
 LEGACY_INDEX_FILE="${CACHE_ROOT}/index.json"
 CLASS_INDEX_FILE="${CACHE_ROOT}/class-index.txt"

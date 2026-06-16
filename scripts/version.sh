@@ -7,16 +7,17 @@ resolve_project_version() {
 
   local pattern="${group_id}:${artifact_id}:"
   local match
+  local max_depth="--max-depth=8"
 
   # 1. 搜索变量引用: "com.xxx:yyy:$varName" → 再找变量定义
   local var_name
-  var_name=$(rg --no-filename \
+  var_name=$(rg --no-filename $max_depth \
     "^[^/]*${pattern}\\\$" \
     "${PROJECT_ROOT}" --glob "*.gradle" --glob "*.gradle.kts" \
     2>/dev/null | grep -v '^\s*//' | grep -oE '\$[a-zA-Z_][a-zA-Z0-9_]*' | head -1 | tr -d '$')
 
   if [ -n "$var_name" ]; then
-    match=$(rg --no-filename \
+    match=$(rg --no-filename $max_depth \
       "${var_name}\s*=\s*['\"]" \
       "${PROJECT_ROOT}" --glob "*.gradle" --glob "*.gradle.kts" \
       2>/dev/null | grep -v '^\s*//' | grep -oE "['\"][^'\"]+['\"]" | head -1 | tr -d "\"'")
@@ -27,7 +28,7 @@ resolve_project_version() {
   fi
 
   # 2. 直接搜索硬编码版本: "com.xxx:yyy:1.2.3"
-  match=$(rg --no-filename \
+  match=$(rg --no-filename $max_depth \
     "^[^/]*${pattern}" \
     "${PROJECT_ROOT}" --glob "*.gradle" --glob "*.gradle.kts" --glob "*.toml" \
     2>/dev/null | grep -v '^\s*//' | grep -oE "${pattern}[0-9][^\"')]*" | head -1)
@@ -37,13 +38,32 @@ resolve_project_version() {
     return
   fi
 
-  # 3. 搜索 version catalog (.toml)
-  match=$(rg --no-filename \
+  # 3. 搜索 version catalog (.toml): inline version
+  match=$(rg --no-filename $max_depth \
     "module\s*=\s*\"${group_id}:${artifact_id}\"" -A2 \
     "${PROJECT_ROOT}" --glob "*.toml" \
     2>/dev/null | grep -oE 'version\s*=\s*"[^"]+' | head -1 | grep -oE '"[^"]+' | tr -d '"')
 
   if [ -n "$match" ]; then
     echo "$match"
+    return
+  fi
+
+  # 4. 搜索 version catalog (.toml): version.ref → [versions] section
+  local version_ref
+  version_ref=$(rg --no-filename $max_depth \
+    "module\s*=\s*\"${group_id}:${artifact_id}\"" -A3 \
+    "${PROJECT_ROOT}" --glob "*.toml" \
+    2>/dev/null | grep -oE 'version\.ref\s*=\s*"[^"]+' | head -1 | grep -oE '"[^"]+' | tr -d '"')
+
+  if [ -n "$version_ref" ]; then
+    match=$(rg --no-filename $max_depth \
+      "^${version_ref}\s*=\s*\"" \
+      "${PROJECT_ROOT}" --glob "*.toml" \
+      2>/dev/null | grep -oE '"[^"]+' | head -1 | tr -d '"')
+    if [ -n "$match" ]; then
+      echo "$match"
+      return
+    fi
   fi
 }

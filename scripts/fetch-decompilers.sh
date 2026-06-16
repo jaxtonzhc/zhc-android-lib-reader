@@ -8,7 +8,7 @@ DECOMPILERS_DIR="${SCRIPT_DIR}/decompilers"
 
 CFR_VERSION="0.152"
 CFR_URL="https://github.com/leibnitz27/cfr/releases/download/${CFR_VERSION}/cfr-${CFR_VERSION}.jar"
-FERNFLOWER_URL="https://raw.githubusercontent.com/nicokosi/fernflower/main/build/fernflower.jar"
+FERNFLOWER_URL="https://repo1.maven.org/maven2/org/jetbrains/intellij/java/java-decompiler-engine/243.21565.208/java-decompiler-engine-243.21565.208.jar"
 
 # Fallback: Maven Central
 CFR_MAVEN_URL="https://repo1.maven.org/maven2/org/benf/cfr/${CFR_VERSION}/cfr-${CFR_VERSION}.jar"

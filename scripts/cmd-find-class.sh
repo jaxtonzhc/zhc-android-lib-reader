@@ -129,19 +129,17 @@ _fuzzy_match_class() {
 # Outputs matching candidates to stdout
 _scan_gradle_for_class() {
   local java_file="$1" kt_file="$2"
-  local tmp_jar_list
+  local tmp_jar_list tmp_result
   tmp_jar_list=$(mktemp)
-  find "${GRADLE_CACHE}" -name "*-sources.jar" -type f > "$tmp_jar_list" 2>/dev/null
-  local tmp_result
   tmp_result=$(mktemp)
+  trap "rm -f '$tmp_jar_list' '$tmp_result'" RETURN
+  find "${GRADLE_CACHE}" -name "*-sources.jar" -type f > "$tmp_jar_list" 2>/dev/null
   cat "$tmp_jar_list" | xargs -P 8 -I{} sh -c '
-    if jar tf "$1" 2>/dev/null | grep -qE "'"${java_file}"'$|'"${kt_file}"'$"; then
+    if unzip -Z -1 "$1" 2>/dev/null | grep -qE "'"${java_file}"'$|'"${kt_file}"'$"; then
       echo "$1"
     fi
   ' _ {} > "$tmp_result" 2>/dev/null || true
-  rm -f "$tmp_jar_list"
   cat "$tmp_result"
-  rm -f "$tmp_result"
 }
 
 cmd_find_class() {
@@ -280,11 +278,9 @@ cmd_find_class() {
       java_file="$kt_file"
     fi
     if [ -n "$content" ]; then
-      # Index it for future lookups
       local found_coord="${gid}:${aid}:${ver}"
       update_index "$found_coord" "source" "$src_jar"
       build_class_index_from_jar "$found_coord" "$src_jar"
-      rebuild_lookup_from_class_index
 
       echo "FOUND:${src_jar}!${java_file}"
       echo "COORD:${gid}:${aid}:${ver}"

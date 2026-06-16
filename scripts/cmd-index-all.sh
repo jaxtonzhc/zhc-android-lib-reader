@@ -2,22 +2,6 @@
 # Command: index-all — Build class name index WITHOUT extracting source JARs
 # Scans JAR file listings to build class-lookup.txt for binary search.
 
-# Progress bar helper (only refresh every 10%)
-_last_pct=-1
-_progress_bar() {
-  local current="$1" total="$2"
-  local pct=$(( current * 100 / total ))
-  local bucket=$(( pct / 10 ))
-  [ "$bucket" = "$_last_pct" ] && return 0
-  _last_pct=$bucket
-  local filled=$(( pct / 2 ))
-  local empty=$(( 50 - filled ))
-  local bar
-  bar=$(printf '%*s' "$filled" '' | tr ' ' '█')
-  bar+=$(printf '%*s' "$empty" '' | tr ' ' '░')
-  printf "  [%s] %d%%\n" "$bar" "$pct"
-}
-
 cmd_index_all() {
   # Save and relax shell options for this function (xargs/jar may fail on individual items)
   local _old_opts
