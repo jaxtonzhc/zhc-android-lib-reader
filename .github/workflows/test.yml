@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
     branches: [main]
 
@@ -10,7 +10,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install bats-core
         run: |
@@ -20,7 +20,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip openjdk-21-jdk-headless
+          sudo apt-get install -y unzip openjdk-21-jdk-headless ripgrep
+
+      - name: Verify tools
+        run: |
+          rg --version
+          jar --version || true
+          unzip -v | head -1
 
       - name: Run tests
         run: bats tests/
