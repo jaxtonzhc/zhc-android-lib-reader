@@ -1,6 +1,10 @@
 ---
 name: zhc-android-lib-reader
+version: 1.0.0
 description: "Automatically locate and read source code for any class, interface, or annotation NOT found in the project's git-tracked source files. Triggers: (1) a class/interface referenced in code or import cannot be found by Grep/Glob in the workspace — e.g. 'class not found', 'cannot resolve symbol', 'no definition found for XxxClass'; (2) need to understand the internal implementation, constructor, callback, or exception behavior of a third-party or internal SDK class; (3) user explicitly asks to read library source. Covers all Android Gradle/Maven dependencies including AAR, JAR, internal Nexus packages. Auto extracts from Gradle cache source JARs with jadx decompile fallback and cross-session cache. Trigger words: class not found, cannot resolve symbol, no definition found, read library source, view library implementation, dependency source, third-party SDK source, lib source, lib-read, lib-search, lib-list."
+compatibility:
+  os: [macos, linux]
+  tools: [cursor, claude, codex, copilot, gemini, openclaw, hermes]
 alwaysApply: true
 ---
 

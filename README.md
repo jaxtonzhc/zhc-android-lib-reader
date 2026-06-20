@@ -28,25 +28,31 @@
 
 ### Installation
 
+**Option A: Via `npx skills` (Recommended)**
+
 ```bash
-# 1. Clone the repository
-git clone git@github.com:jaxtonzhc/zhc-android-lib-reader.git
+# Install to all supported AI Agents (Cursor, Claude Code, Codex, Copilot, etc.)
+npx skills add jaxtonzhc/zhc-android-lib-reader
+
+# Update to latest version
+npx skills update zhc-android-lib-reader
+```
+
+**Option B: Via `install.sh`**
+
+```bash
+git clone https://github.com/jaxtonzhc/zhc-android-lib-reader.git
 cd zhc-android-lib-reader
-
-# 2. One-click install to all AI Agents (Cursor, Codex, Claude Code, etc.)
 bash install.sh
-
-# 3. Initialize and build index
-./scripts/lib-reader.sh init
-./scripts/lib-reader.sh index-all
 ```
 
 The `install.sh` script auto-detects and creates symlinks in `~/.cursor/skills/`, `~/.codex/skills/`, `~/.claude/skills/`, `~/.agents/skills/`, and `~/.hermes/skills/`.
 
-You can also install manually:
+**After installation, initialize and build index:**
 
 ```bash
-ln -sf /path/to/zhc-android-lib-reader ~/.cursor/skills/zhc-android-lib-reader
+./scripts/lib-reader.sh init
+./scripts/lib-reader.sh index-all
 ```
 
 ## Usage

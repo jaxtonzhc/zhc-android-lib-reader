@@ -28,25 +28,31 @@
 
 ### 安装
 
+**方式 A：通过 `npx skills` 安装（推荐）**
+
 ```bash
-# 1. 克隆仓库
-git clone git@github.com:jaxtonzhc/zhc-android-lib-reader.git
+# 安装到所有支持的 AI Agent（Cursor、Claude Code、Codex、Copilot 等）
+npx skills add jaxtonzhc/zhc-android-lib-reader
+
+# 更新到最新版本
+npx skills update zhc-android-lib-reader
+```
+
+**方式 B：通过 `install.sh` 安装**
+
+```bash
+git clone https://github.com/jaxtonzhc/zhc-android-lib-reader.git
 cd zhc-android-lib-reader
-
-# 2. 一键安装到所有 AI Agent（Cursor、Codex、Claude Code 等）
 bash install.sh
-
-# 3. 初始化并建立索引
-./scripts/lib-reader.sh init
-./scripts/lib-reader.sh index-all
 ```
 
 `install.sh` 会自动检测并创建软链接到 `~/.cursor/skills/`、`~/.codex/skills/`、`~/.claude/skills/`、`~/.agents/skills/`、`~/.hermes/skills/`。
 
-也可以手动安装：
+**安装后初始化并建立索引：**
 
 ```bash
-ln -sf /path/to/zhc-android-lib-reader ~/.cursor/skills/zhc-android-lib-reader
+./scripts/lib-reader.sh init
+./scripts/lib-reader.sh index-all
 ```
 
 ## 使用方法
